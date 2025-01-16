@@ -10,7 +10,7 @@ spp_names <- readRDS("./data/spp_names.RDS")
 #  to many phytosociological releve forms, will also contain words as "Rocks", 
 #  "Soil", etc, so we must also keep track of them:
 
-regex <- "sp\\.|agg\\.|cf\\.|[0-9]|(\\?|\\!)|[rR]ock?|[sS]oil|[lL]ichen?|[lL]itter"
+regex <- "sp\\.|agg\\.|cf\\.|[0-9]|(\\?|\\!)|[rR]ock?|[sS]oil|[lL]ichen?|[lL]itter|[bB]ryophyte?"
 
 filter_bad_names   <- function(spp) grepl(regex, spp)
 filter_good_names  <- Negate(filter_bad_names)
@@ -71,21 +71,279 @@ remDr <- rD$client
 # Open the ghost browser session
 remDr$open()
 
+
 # Make a list of your urls in the Kew gardens website
 target_urls <- paste0("https://powo.science.kew.org/results?q=", 
                       na.omit(translations$spp_clean)
 )
+names(target_urls) <- translations$spp_clean
 
 # Set a list with names we will fill in
 synonyms_list        <- vector("list", length = length(target_urls))
 names(synonyms_list) <- na.omit(translations$spp_clean)
 ssp_list <- synonyms_list
 
+## Small data set test:
+## Take only 3 species from the list and try to extract the relevant information
+
+tst_urls <- target_urls[c(1, 34, 66)]
+tst_synonyms_list <-  synonyms_list[c(1, 34, 66)]
+
+## Each species can contain related names either in the Synonyms or the Accepted
+#  Intraspecifics sections of the POWO website. Each section has its own xpath:
+xpath_button <- "/html/body/div[2]/div/div[3]/main/section/div[1]/div/article/a"
+xpath_button <- "/html/body/div[2]/div/div[3]/main/section/div[1]/div/article/a/div/p"
+xpath_syns  <- "/html/body/div[2]/main/section[2]/div/div[2]/div/ul"
+xpath_intra <- "/html/body/div[2]/main/section[3]/div/div[2]/div"
+
+## Now let's try navigating to one of the species urls. Acer campestre, that
+#  has both synonyms and accepted intraspecifics, will work:
+
+## First let's access the general information url of Acer campestre:
+
+get_spp_url <- 
+  function(
+    search_url, 
+    xpath = xpath_button
+    ){
+  remDr$navigate(search_url)
+  Sys.sleep(1.5)
+  temp <- remDr$findElement(
+    using = "xpath",
+    value = xpath
+  )
+  temp$clickElement()
+}
+get_spp_url(tst_urls[[1]])
+# If we run this command, it works, leading us to the correct website:
+get_spp_url(tst_urls[[1]])
+
+## Now let's find which are the synonyms. Making a function will be useful
+#  as we have to know both the synonyms at the species and at the subspecies
+#  level, so we want a consistent tool:
+
+get_synonyms <- function(url, xpath = xpath_syns){
+  if(url %in% target_urls) get_spp_url(url)
+  else remDr$navigate(url)
+  # Let the system update
+  Sys.sleep(.5)
+  
+  # Set a temporal object on which to call the url contents
+  tmp_syns_tbl <-
+    remDr$findElement("xpath", "/html/body/div[2]/main/section[2]/div/div[2]")
+  
+  # Obtain the synonyms
+  tmp <- 
+    tmp_syns_tbl$getCurrentUrl()[[1]] %>% 
+    read_html() %>% 
+    html_elements(xpath = xpath) %>% 
+    html_text2() %>% 
+    str_split("\n") %>% 
+    unlist() %>% 
+    .[!grepl("\\r", .)]
+  
+  # Get a version of the synonyms without all the author names,
+  # identified by capital letters or parentheses
+  tmp_clean <-
+    sapply(
+      tmp,
+      function(x){
+        places <- str_locate_all(x, "[A-Z]|(\\s\\()")[[1]]
+        if(NROW(places) > 1){
+         cut_at <- places[2,1]-1
+         str_sub(x, 1, cut_at) %>% str_trim()
+        }
+        else x})
+  
+  names(tmp_clean) <- NULL
+
+  # Let's store the results in a list
+  res <- list()
+  res$n <- length(tmp)
+  res$names <- tmp
+  res$clean <- tmp_clean
+  
+  return(res)
+}
+# It works, run the following command to try:
+# get_synonyms(tst_urls[[1]])
+
+get_ssp <- 
+  function(
+    url,
+    xpath = xpath_intra){
+    # The absence of subspecies in some cases leads us to use a tryCatch to
+    # obtain some specific value (in our case, NULL) once we don't find the 
+    # corresponding infraspecifics of a species, instead of obtaining an error
+    # that stops the process
+    
+    tryCatch(
+      {
+      Sys.sleep(1)
+      if(url %in% target_urls) get_spp_url(search_url = url)
+      else stop("The species' URL can only be from the accepted names, not one of the synonyms")
+      Sys.sleep(1)
+      
+      # Many species don't have any subspecies, so it is convenient to search
+      # by link text rather than by xpath, as the xpath will be overtaken
+      # by another section if the subspecies are missing, retrieving then
+      # wrong information
+      tmp_ssp_tbl <-
+        remDr$findElement(using = "link text", "Accepted Infraspecifics")
+      
+      # In case we would like to use an available xpath, it would be this one:
+      # "/html/body/div[2]/main/section[2]/div/div[2]")
+      
+      
+      # Now, similar as in the body of get_synonyms(), obtain number and two 
+      # version (raw and clean) of the subspecies names:
+      
+      tmp <-    
+        tmp_ssp_tbl$getCurrentUrl()[[1]] %>% 
+          read_html() %>% 
+          html_elements(xpath = xpath) %>% 
+          html_text2() %>% 
+          str_split("\n") %>% 
+          unlist() %>% 
+          .[!grepl("\\r", .)]
+      
+      tmp_clean <-
+        sapply(
+          tmp,
+            function(x){
+              places <- str_locate_all(x, "[A-Z]|(\\s\\()")[[1]]
+              if(NROW(places) > 1){
+                cut_at <- places[2,1]-1
+                str_sub(x, 1, cut_at) %>% str_trim()
+              }
+             else x
+            })
+      
+      names(tmp_clean) <- NULL
+      
+      res <- list()
+      res$n <- length(tmp)
+      res$names <- tmp
+      res$clean <- tmp_clean
+      
+      return(res)
+        },
+      error = function(e) NULL
+      )
+  }
+
+# It works, run the following command to try:
+# get_ssp(target_urls[[1]]) # (Acer campestre, returns 3 ssps)
+# get_ssp(target_urls[[2]]) # (Allium scorodoprasum, 0 ssps, returns NULL)
+
+## Now we now how to retrieve the synonyms and the subspecies of the species
+#  present in our list of accepted names. However, we have to add a layer of
+#  complexity by, then, searching the synonyms of the subspecies.
+## This means that, for each species in target_urls, we must obtain:
+#  1) List of synonyms:   Done -> get_synonyms()
+#  2) List of subspecies: Done -> get_ssp()
+#  3) For each subspecies, list of synonyms: pending
+
+## Let's go back to the start, and find how to obtain the URLs of the 
+#  different ssps. At least we know what species do contain subspecies,
+#  so we can make our search easier:
+y <- vector("list", length = length(target_urls))
+names(y) <- translations$spp_clean
+for(i in seq_along(target_urls)){
+ y[[i]] <- get_ssp(target_urls[[i]]) 
+}
+
+spp_with_ssps <- names(y[-c(which(sapply(y, is.null)))])
+
+get_subsp_url <- function(url){
+  get_spp_url(url)
+  tmp <- remDr$findElement(using = "link text", value = "Accepted Infraspecifics")
+  tmp$clickElement()
+  x <- 
+    tmp$getCurrentUrl()[[1]] %>% 
+    read_html() %>% 
+    html_nodes(xpath = "//*[@class='teal-link']") %>% 
+    html_attr("href")
+  # If we explore a little bit, we find that the links that end with 1 are those
+  # belonging to (sub)species, while those ending with 2 or higher are for genera
+  # and families. 
+  x <- x[grepl("-1$", x)]
+  x <- paste0("https://powo.science.kew.org", x)
+  return(x)
+}
+
+tst_fun <- function(url){
+  url_db <- get_subsp_url(url)
+  Sys.sleep(1)
+  my_ls  <-lapply(url_db, get_synonyms)
+  my_ls <-
+    my_ls %>% 
+      lapply("[[", "clean") %>% 
+      Reduce(c, .) %>% 
+      unlist() %>% 
+      unique() %>% 
+      .[grepl("\\s", .)]
+  return(my_ls)
+}
+
+tst <- tst_fun(target_urls[spp_with_ssps][[4]])
+
+subspecies_synonyms <- vector("list", length(spp_with_ssps))
+for(i in seq_along(subspecies_synonyms)){
+  subspecies_synonyms[[i]] <- 
+    get_synonyms("https://powo.science.kew.org/taxon/urn:lsid:ipni.org:names:884615-1")
+}
+
+# Find the element to click on:
+tmp <- remDr$findElement(using = "xpath", "/html/body/div[2]/div/div[3]/main/section/div[1]/div/article/a")
+tmp$clickElement()
+## Now we are in the website devoted to that species. Let's search for the
+#  information of each section:
+tmp_syns <- remDr$findElement(using = "link text", "Synonyms")
+
+# tmp_syns_tbl <- remDr$findElement("xpath", "/html/body/div[2]/main/section[2]/div/div[2]")
+# tmp_syns_tbl$clickElement()
+
+tmp_syns_tbl$getCurrentUrl()[[1]] %>% 
+  read_html() %>% 
+  html_elements(xpath = xpath_syns) %>% 
+  html_text2() %>% 
+  str_split("\n") %>% 
+  unlist() %>% 
+  .[!grepl("\\r", .)]
+
+
+tmp_ssp  <- remDr$findElement(using = "link text", "Accepted Infraspecifics")
+
+# We can already store all the names of the subspecies like this:
+tmp_ssp_vec <- 
+  tmp_ssp$getCurrentUrl()[[1]] %>% 
+  read_html() %>% 
+  html_elements(xpath = "/html/body/div[2]/main/section[3]/div/div[2]") %>% 
+  html_text2() %>% 
+  str_split("\n") %>% 
+  unlist() %>% 
+  .[!grepl("\\r", .)]
+
+## All the 
+
+ssp_url  <- tmp$getCurrentUrl()[[1]]
+ind <- 1
+tmp_ssp_url <- 
+  remDr$findElement(
+  using = "xpath", 
+  value = 
+    paste0("/html/body/div[2]/main/section[3]/div/div[2]/div/ul/li[", ind, "]/a")
+)
+tmp_ssp_url$clickElement()
+
+
 # You first have to go to the kew gardens website and reject the cookies. 
 remDr$navigate(target_urls[[1]])
 # After rejecting them don't to
 cookies_close <- ""
 pop_up_close  <- "/html/body/div[2]/div/div[1]/div/div/div[1]/div/button/svg"
+
 
 
 # Iterate the search along the target urls:
