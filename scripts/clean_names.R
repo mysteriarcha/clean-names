@@ -7,8 +7,13 @@ spp_emma <- read.csv("./data/spp_names/sp_list_resurvey_reloc_bias_301024.csv")
 spp_emma <- spp_emma$Species_name
 
 ## Make functions to detect the anomalous names due to aggregates, unidentified
-#  species, numbers appearing in the species name, etc.
-filter_bad_names   <- function(spp) grepl("sp\\.|agg\\.|cf\\.|[0-9]|(\\?|\\!)", spp)
+#  species, numbers appearing in the species name, etc. Some datasets, according
+#  to many phytosociological releve forms, will also contain words as "Rocks", 
+#  "Soil", etc, so we must also keep track of them:
+
+regex <- "sp\\.|agg\\.|cf\\.|[0-9]|(\\?|\\!)|[rR]ock?|[sS]oil|[lL]ichen?|[lL]itter"
+
+filter_bad_names   <- function(spp) grepl(regex, spp)
 filter_good_names  <- Negate(filter_bad_names)
 
 ## Get the filtered species list: those that we want to run our function on and 
