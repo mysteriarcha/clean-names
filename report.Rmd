@@ -48,7 +48,7 @@ with different names, depending on the region and _Inula salicina_ $\equiv$ _Pen
 
 3. Systematic changes: Displacements of a species within the phylogenetic tree,
 with the consequent change in names. For example, _Dorycnium austriacum_ can be
-replaced as _Lotus dorycnium_.
+replaced as _Lotus dorycnium_. This can be solved, however.
 
 
 
