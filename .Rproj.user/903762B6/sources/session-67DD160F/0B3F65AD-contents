@@ -3,18 +3,22 @@ library(tidyverse)
 source("./scripts/functions/get_clean_names_II.R")
 
 ## Read the species list and make it a vector, not a data frame
-spp_emma <- read.csv("./data/spp_names/sp_list_resurvey_reloc_bias_301024.csv")
-spp_emma <- spp_emma$Species_name
+spp_names <- readRDS("./data/spp_names.RDS")
 
 ## Make functions to detect the anomalous names due to aggregates, unidentified
-#  species, numbers appearing in the species name, etc.
-filter_bad_names   <- function(spp) grepl("sp\\.|agg\\.|cf\\.|[0-9]|(\\?|\\!)", spp)
+#  species, numbers appearing in the species name, etc. Some datasets, according
+#  to many phytosociological releve forms, will also contain words as "Rocks", 
+#  "Soil", etc, so we must also keep track of them:
+
+regex <- "sp\\.|agg\\.|cf\\.|[0-9]|(\\?|\\!)|[rR]ock?|[sS]oil|[lL]ichen?|[lL]itter"
+
+filter_bad_names   <- function(spp) grepl(regex, spp)
 filter_good_names  <- Negate(filter_bad_names)
 
 ## Get the filtered species list: those that we want to run our function on and 
 #  those that we don't want and will have to handle manually
-spp_emma_filtered <- spp_emma[filter_good_names(spp_emma)]
-spp_emma_out      <- spp_emma[filter_bad_names(spp_emma)]
+spp_names_filtered <- spp_names[filter_good_names(spp_names)]
+spp_names_out      <- spp_names[filter_bad_names(spp_names)]
 
 ## Now let's first deal with the species we have "in good shape" to standardize
 # their names according to the World Catalogue of Vascular Plants
@@ -23,7 +27,7 @@ spp_emma_out      <- spp_emma[filter_bad_names(spp_emma)]
 #  always returns the same values
 {
   set.seed(1452)
-  x <- get_clean_names(spp_emma_filtered, "WCVP", "/data/spp_names/")
+  x <- get_clean_names(spp_names_filtered, "WCVP", "/data/spp_names/")
 }
 
 ## Check which species did fail to be translated:
@@ -34,7 +38,7 @@ x$failures
 #  and with the families:
 spp_db <- 
   data.frame(
-    spp_raw = spp_emma_filtered,
+    spp_raw = spp_names_filtered,
     spp_clean = x$spp,
     family = x$family
   ) %>% 
@@ -199,7 +203,7 @@ spp_db$genus <- stringr::str_split(spp_db$spp_clean, "\\s") %>% sapply("[[", 1)
 ## Now we can deal with the other 25 species manually. 
 #  Some of them will be implicitly already present in our spp_db object, 
 #  some of them not
-spp_emma_out
+spp_names_out
 
 ## THE FOLLOWING ACTIONS ARE JUST A SUGGESTION. You know better than me what 
 #  to do with and how to interpret all the "cf." and "agg.". My suggestion
@@ -207,7 +211,7 @@ spp_emma_out
 #  data is taxonomically trustworthy or that the study question does not require 
 #  the 'aggregatum' level of precision):
 
-## Let's gather first which spp in spp_emma_out have species name. These are
+## Let's gather first which spp in spp_names_out have species name. These are
 #  10 out of 25
 spp_out <- c("Carex montana", "Euphorbia dulcis", "Festuca rubra", "Festuca valesiaca",
              "Knautia arvensis", "Medicago falcata", "Potentilla verna",
@@ -222,7 +226,7 @@ diff_spp <- names(redundant_spp)[!redundant_spp] # These are not yet in spp_db
 ## They can be easily added manually to spp_db
 
 ## Now let's take a look at the genera that were left out: 
-genera_out <- stringr::str_split(spp_emma_out, "\\s") %>% sapply("[", 1)
+genera_out <- stringr::str_split(spp_names_out, "\\s") %>% sapply("[", 1)
 length(unique(genera_out)) # 22 genera
 intersect(genera_out, spp_db$genus) # 19 of them are already present in spp_db
 setdiff(genera_out, spp_db$genus)   # These are the 3 not present in spp_db
@@ -234,9 +238,9 @@ setdiff(genera_out, spp_db$genus)   # These are the 3 not present in spp_db
 
 ## Make the necessary changes manually on the spp_db object until you're done,
 #  and then run, changing the file path and name to your convenience:
-#  write.csv(spp_db "./data/spp_names/spp_emma_clean.csv")
+#  write.csv(spp_db "./data/spp_names/spp_names_clean.csv")
 
-spp_combn  <- t(combn(spp_emma_filtered, 2))
+spp_combn  <- t(combn(spp_names_filtered, 2))
 congeneric_pairs <- 
   t(
     apply(spp_combn, 

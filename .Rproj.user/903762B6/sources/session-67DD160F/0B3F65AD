@@ -3,7 +3,7 @@
     "path": "~/Documents/Gonzalo R/PhD/webscraping/clean_names/scripts/clean_names.R",
     "project_path": "scripts/clean_names.R",
     "type": "r_source",
-    "hash": "0",
+    "hash": "854427840",
     "contents": "",
     "dirty": false,
     "created": 1736966523466.0,
@@ -13,15 +13,15 @@
         "tempName": "Untitled1",
         "source_window_id": "",
         "Source": "Source",
-        "cursorPosition": "251,0",
-        "scrollLine": "0"
+        "cursorPosition": "21,0",
+        "scrollLine": "3"
     },
     "folds": "",
-    "lastKnownWriteTime": 1736966546,
+    "lastKnownWriteTime": 1737032321,
     "encoding": "UTF-8",
     "collab_server": "",
     "source_window": "",
-    "last_content_update": 1736966546185,
+    "last_content_update": 1737032321837,
     "read_only": false,
     "read_only_alternatives": []
 }
