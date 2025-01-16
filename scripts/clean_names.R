@@ -1,0 +1,251 @@
+library(tidyverse)
+## Load the function to clean the names
+source("./scripts/functions/get_clean_names_II.R")
+
+## Read the species list and make it a vector, not a data frame
+spp_emma <- read.csv("./data/spp_names/sp_list_resurvey_reloc_bias_301024.csv")
+spp_emma <- spp_emma$Species_name
+
+## Make functions to detect the anomalous names due to aggregates, unidentified
+#  species, numbers appearing in the species name, etc.
+filter_bad_names   <- function(spp) grepl("sp\\.|agg\\.|cf\\.|[0-9]|(\\?|\\!)", spp)
+filter_good_names  <- Negate(filter_bad_names)
+
+## Get the filtered species list: those that we want to run our function on and 
+#  those that we don't want and will have to handle manually
+spp_emma_filtered <- spp_emma[filter_good_names(spp_emma)]
+spp_emma_out      <- spp_emma[filter_bad_names(spp_emma)]
+
+## Now let's first deal with the species we have "in good shape" to standardize
+# their names according to the World Catalogue of Vascular Plants
+
+## Run the seed and the function at once, to make sure the fuzzy matching
+#  always returns the same values
+{
+  set.seed(1452)
+  x <- get_clean_names(spp_emma_filtered, "WCVP", "/data/spp_names/")
+}
+
+## Check which species did fail to be translated:
+x$failures
+# Just one: Euonimus europeus
+
+## Create a dataframe with the species names before correction, after correction,
+#  and with the families:
+spp_db <- 
+  data.frame(
+    spp_raw = spp_emma_filtered,
+    spp_clean = x$spp,
+    family = x$family
+  ) %>% 
+  arrange(spp_clean)
+
+## Correct the "Euonimus europeus" error:
+spp_db[spp_db$spp_raw %in% x$failures, ] <- 
+  c(x$failures, "Euonymus europaeus", "Celastraceae")
+
+spp_db <- arrange(spp_db, spp_clean)
+
+## Get what species suffered a translation change
+translations <- spp_db[!(spp_db$spp_raw %in% spp_db$spp_clean), ]
+NROW(translations) # 66 of them had to be translated to fit WCVP standards
+
+## Let's do some webscraping!
+library(RSelenium)
+library(netstat)
+library(rvest)
+
+# Start the driver of R Selenium
+rD <- rsDriver(browser="firefox", 
+               port=free_port(), 
+               verbose=F,
+               version = "latest",
+               chromever = NULL)
+
+# Now select the client from the server
+remDr <- rD$client
+# Open the ghost browser session
+remDr$open()
+
+# Make a list of your urls in the Kew gardens website
+target_urls <- paste0("https://powo.science.kew.org/results?q=", 
+                      na.omit(translations$spp_clean)
+)
+
+# Set a list with names we will fill in
+synonyms_list        <- vector("list", length = length(target_urls))
+names(synonyms_list) <- na.omit(translations$spp_clean)
+ssp_list <- synonyms_list
+
+# You first have to go to the kew gardens website and reject the cookies. 
+remDr$navigate(target_urls[[1]])
+# After rejecting them don't to
+
+# Iterate the search along the target urls:
+for(i in seq_along(synonyms_list)){
+  tryCatch(
+    {
+      remDr$navigate(target_urls[[i]])
+      Sys.sleep(1) # Stop for half a second. Necessary, otherwise the system gets confused
+      tmp <- remDr$findElement(using = "xpath", "/html/body/div[2]/div/div[3]/main/section/div[1]/div/article/a")
+      
+      # class(A.campestre)
+      # tmp$getElementAttribute("href")
+      
+      tmp$clickElement()
+      tmp_syns <- remDr$findElement(using = "link text", "Synonyms")
+      tmp_ssp  <- remDr$findElement(using = "link text", "Accepted Infraspecifics")
+      
+      tmp_syns$clickElement()
+      
+      # tmp_syns_tbl <- remDr$findElement("xpath", "/html/body/div[2]/main/section[2]/div/div[2]")
+      # tmp_syns_tbl$clickElement()
+      
+      ssp_list[[i]] <-
+        tmp_ssp$getCurrentUrl()[[1]] %>% 
+        read_html() %>% 
+        html_elements(xpath = "/html/body/div[2]/main/section[3]/div/div[2]") %>% 
+        html_text2() %>% 
+        str_split("\n") %>% 
+        unlist()
+      
+      if(!is.null(ssp_list[[i]])){
+        sp_url  <- tmp$getCurrentUrl()[[1]]
+        ind <- 1
+        tmp_ssp <- 
+          remDr$findElement(
+            using = "xpath", 
+            value = 
+              paste0("/html/body/div[2]/main/section[3]/div/div[2]/div/ul/li[", ind, "]/a")
+          )
+        tmp_ssp$clickElement()
+        x <- list()
+        x[[ind]] <- 
+          tmp_ssp$getCurrentUrl()[[1]] |>
+          read_html(tmp_syns$getCurrentUrl()[[1]]) |> 
+          html_elements(xpath = "/html/body/div[2]/main/section[2]/div/div[2]") |>
+          html_text()
+        
+        while(exists("tmp_ssp")){
+          tryCatch(
+            {
+              rm("tmp_ssp")
+              ind <- ind + 1
+              remDr$navigate(sp_url)
+              tmp_ssp <- 
+                remDr$findElement(
+                  using = "xpath", 
+                  value = 
+                    paste0("/html/body/div[2]/main/section[3]/div/div[2]/div/ul/li[", ind, "]/a")
+                )
+              tmp_ssp$clickElement()
+              x[[ind]] <- 
+                tmp_ssp$getCurrentUrl()[[1]] |>
+                read_html(tmp_syns$getCurrentUrl()[[1]]) |> 
+                html_elements(xpath = "/html/body/div[2]/main/section[2]/div/div[2]") |>
+                html_text()
+            },
+            error = function(e) NULL)
+        }
+        
+        tmp_ssp$getElementText()
+        tmp_ssp$clickElement()
+        
+        tmp_ssp$getCurrentUrl()[[1]] %>% 
+          read_html() %>% 
+          html_elements(xpath = "/html/body/div[2]/main/section[3]/div/div[2]") %>% 
+          html_text2()
+      }
+      
+      synonyms_list[[i]] <-
+        read_html(tmp_syns$getCurrentUrl()[[1]]) |> 
+        html_elements(xpath = "/html/body/div[2]/main/section[2]/div/div[2]") |>
+        html_text()
+      
+      
+      
+      
+    },
+    error = function(e){
+      print(paste0("No synonyms for ", translations$spp_clean[[i]], ". Better check manually!"))
+      return(synonyms_list[[i]] <- "\nNo synonyms!\n")
+    }
+  )
+}
+
+## The display will be much faster if you first clear your console history.
+#  In my system it's cleaned with ctrl+l
+#  You need the cat function to display nicely the contents retrieved by 
+#  html_text function
+cat(synonyms_list$`Veronica chamaedrys`)
+ssp_list$`Silene otites`
+
+good_synonym <- logical(length(na.omit(translations$spp_clean)))
+for(i in seq_along(synonyms_list)){
+  tryCatch(
+    good_synonym[i] <- grepl(translations[i,1], x = synonyms_list[[i]]),
+    error = function(e) good_synonym[i] <- F
+  )
+}
+
+## There are now duplicated species, delete them by:
+spp_db <- spp_db[unique(match(spp_db$spp_clean, spp_db$spp_clean)), ]
+
+
+
+## Make a column for genera with:
+spp_db$genus <- stringr::str_split(spp_db$spp_clean, "\\s") %>% sapply("[[", 1)
+
+## Now we can deal with the other 25 species manually. 
+#  Some of them will be implicitly already present in our spp_db object, 
+#  some of them not
+spp_emma_out
+
+## THE FOLLOWING ACTIONS ARE JUST A SUGGESTION. You know better than me what 
+#  to do with and how to interpret all the "cf." and "agg.". My suggestion
+#  goes in the line of thinking that those strings are uninformative (i.e. the
+#  data is taxonomically trustworthy or that the study question does not require 
+#  the 'aggregatum' level of precision):
+
+## Let's gather first which spp in spp_emma_out have species name. These are
+#  10 out of 25
+spp_out <- c("Carex montana", "Euphorbia dulcis", "Festuca rubra", "Festuca valesiaca",
+             "Knautia arvensis", "Medicago falcata", "Potentilla verna",
+             "Ranunculus auricomus", "Verbascum nigrum", "Vicia cracca")
+
+## Let's see which ones have been implicitly incorporated already into the
+#  clean species list
+redundant_spp <- sapply(spp_out, function(x) any(spp_db$spp_clean == x))
+
+names(redundant_spp)[redundant_spp] # Don't need to worry about these, they are already in spp_db
+diff_spp <- names(redundant_spp)[!redundant_spp] # These are not yet in spp_db
+## They can be easily added manually to spp_db
+
+## Now let's take a look at the genera that were left out: 
+genera_out <- stringr::str_split(spp_emma_out, "\\s") %>% sapply("[", 1)
+length(unique(genera_out)) # 22 genera
+intersect(genera_out, spp_db$genus) # 19 of them are already present in spp_db
+setdiff(genera_out, spp_db$genus)   # These are the 3 not present in spp_db
+
+## Now you will have to decide how to deal with the 15 (25 - 10) remaining species,
+#  as they don't have species names. Most genera are already included in spp_bd,
+#  but 3 of them are not there yet (Betula, Rosa and Taraxacum), so you cannot 
+#  guess from the congeneric species in spp_db 
+
+## Make the necessary changes manually on the spp_db object until you're done,
+#  and then run, changing the file path and name to your convenience:
+#  write.csv(spp_db "./data/spp_names/spp_emma_clean.csv")
+
+spp_combn  <- t(combn(spp_emma_filtered, 2))
+congeneric_pairs <- 
+  t(
+    apply(spp_combn, 
+          1, 
+          function(x){
+            gen1 <- str_split(x[1], "\\s")[[1]] 
+            gen2 <- str_split(x[2], "\\s")[[1]] 
+            return(gen1 == gen2)
+          }
+    )
+  )[, 1]
+spp_combn[congeneric_pairs, ]
