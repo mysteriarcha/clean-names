@@ -1,6 +1,6 @@
 library(tidyverse)
 ## Load the function to clean the names
-source("./scripts/functions/get_clean_names_II.R")
+source("./scripts/functions/get_clean_names.R")
 
 ## Read the species list and make it a vector, not a data frame
 spp_names <- readRDS("./data/spp_names.RDS")
@@ -27,7 +27,7 @@ spp_names_out      <- spp_names[filter_bad_names(spp_names)]
 #  always returns the same values
 {
   set.seed(1452)
-  x <- get_clean_names(spp_names_filtered, "WCVP", "/data/spp_names/")
+  x <- get_clean_names(spp_names_filtered, "WCVP", "/data/")
 }
 
 ## Check which species did fail to be translated:
@@ -84,6 +84,9 @@ ssp_list <- synonyms_list
 # You first have to go to the kew gardens website and reject the cookies. 
 remDr$navigate(target_urls[[1]])
 # After rejecting them don't to
+cookies_close <- ""
+pop_up_close  <- "/html/body/div[2]/div/div[1]/div/div/div[1]/div/button/svg"
+
 
 # Iterate the search along the target urls:
 for(i in seq_along(synonyms_list)){
