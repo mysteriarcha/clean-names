@@ -24,15 +24,17 @@ spp_names_out      <- spp_names[filter_bad_names(spp_names)]
 # their names according to the World Catalogue of Vascular Plants
 
 ## Run the seed and the function at once, to make sure the fuzzy matching
-#  always returns the same values
+#  always returns the same values (the brackets are a way to make sure
+#  we run the two commands together in case we are interactively executing
+#  the script)
 {
   set.seed(1452)
   x <- get_clean_names(spp_names_filtered, "WCVP", "/data/")
 }
 
 ## Check which species did fail to be translated:
-x$failures
-# Just one: Euonimus europeus
+# x$failures
+# Just one: Euonimus europeus (should be Euonymous europaeus)
 
 ## Create a dataframe with the species names before correction, after correction,
 #  and with the families:
@@ -66,35 +68,43 @@ rD <- rsDriver(browser="firefox",
                version = "latest",
                chromever = NULL)
 
+# A browser window will pop-up automatically; close it manually. 
 # Now select the client from the server
 remDr <- rD$client
+remDr$close()
 # Open the ghost browser session
 remDr$open()
 
-
-# Make a list of your urls in the Kew gardens website
-target_urls <- paste0("https://powo.science.kew.org/results?q=", 
-                      na.omit(translations$spp_clean)
+# Make a list of your urls in the Kew gardens website. We need to add the
+# quote-unquote because otherwise the first result from our search is not
+# the match to our species but to some subspecies of another species.
+# For example searching for Arenaria serpyllifolia returns as first result
+# Arenaria nevadensis, a species from Nevada, US, which contains a subspecies 
+# whose synonym matches with Arenaria serpyllifolia. Of course this is not
+# what we want. The quote-unquote around the binomen solves this
+target_urls <- paste0('https://powo.science.kew.org/results?q=', 
+                      '"', na.omit(translations$spp_clean), '"'
 )
-names(target_urls) <- translations$spp_clean
+target_urls <- unique(target_urls)
+names(target_urls) <- unique(translations$spp_clean)
 
 # Set a list with names we will fill in
 synonyms_list        <- vector("list", length = length(target_urls))
-names(synonyms_list) <- na.omit(translations$spp_clean)
-ssp_list <- synonyms_list
-
-## Small data set test:
-## Take only 3 species from the list and try to extract the relevant information
-
-tst_urls <- target_urls[c(1, 34, 66)]
-tst_synonyms_list <-  synonyms_list[c(1, 34, 66)]
+names(synonyms_list) <- unique(translations$spp_clean)
 
 ## Each species can contain related names either in the Synonyms or the Accepted
 #  Intraspecifics sections of the POWO website. Each section has its own xpath:
-xpath_button <- "/html/body/div[2]/div/div[3]/main/section/div[1]/div/article/a"
+xpath_accepted <- "/html/body/div[2]/div/div[3]/main/div/div[1]/div/div/ul/li[2]/div"
 xpath_button <- "/html/body/div[2]/div/div[3]/main/section/div[1]/div/article/a/div/p"
 xpath_syns  <- "/html/body/div[2]/main/section[2]/div/div[2]/div/ul"
 xpath_intra <- "/html/body/div[2]/main/section[3]/div/div[2]/div"
+
+# There's a free parameter, the threshold time to concatenate the different
+# actions in the ghost browser, as the browser needs to execute each command
+# before the subsequent one makes sense, but the codes evaluates the commands
+# faster. Let's set that threshold time at 2.5 seconds (it depends on  the machine
+# and the connection speed):
+threshold_time <- 1.5
 
 ## Now let's try navigating to one of the species urls. Acer campestre, that
 #  has both synonyms and accepted intraspecifics, will work:
@@ -104,69 +114,119 @@ xpath_intra <- "/html/body/div[2]/main/section[3]/div/div[2]/div"
 get_spp_url <- 
   function(
     search_url, 
-    xpath = xpath_button
+    xpath0 = xpath_accepted,
+    xpath1 = xpath_button
     ){
-  remDr$navigate(search_url)
-  Sys.sleep(1.5)
-  temp <- remDr$findElement(
-    using = "xpath",
-    value = xpath
-  )
-  temp$clickElement()
-}
-get_spp_url(tst_urls[[1]])
-# If we run this command, it works, leading us to the correct website:
-get_spp_url(tst_urls[[1]])
+  tryCatch(
+    {
+      remDr$navigate(search_url)
+      Sys.sleep(threshold_time)
+      
+      # Select only accepted species names (without it face similar problems 
+      # as those coming from not using the quote-unquote in the URL)
+      temp <- remDr$findElement(
+        using = "xpath",
+        value = xpath0
+      )
+      temp$clickElement()
+      
+      Sys.sleep(1)
+      
+      # Click on the species name button
+      temp <- remDr$findElement(
+        using = "xpath",
+        value = xpath1
+      )
+      temp$clickElement()
+      
+    },
+    error = function(e) FALSE  # For "unplaced" species (i.e. Knautia rimosa) 
+    )
+  }
+
+## IMPORTANT!
+#  1) Close the cookies and pop-up information window manually
+#  2) Then rerun the first call to get_spp_url
+## PENDING: find the xpath of these two buttons to press them automatically
+
+## Run the following and close manually the cookies box and the pop-up window:
+get_spp_url(target_urls[[1]])
+
+## Some species are "unplaced", that means that their names are not truly
+#  located anywhere. This forces us to examine their synonyms and subspecies
+#  manually, not through our webscraping functions. We can detect them with
+#  the following code:
+x <- lapply(target_urls, get_spp_url)
+unplaced_spp <- names(x)[sapply(x, isFALSE)]
+# unplaced_spp
+## Clinopodium arvense, Knautia rimosa and Trisetum elatum are unplaced species.
+#  Let's get rid of them:
+target_urls <- target_urls[!sapply(x, isFALSE)]
 
 ## Now let's find which are the synonyms. Making a function will be useful
 #  as we have to know both the synonyms at the species and at the subspecies
-#  level, so we want a consistent tool:
-
+#  level, so we want a consistent tool
 get_synonyms <- function(url, xpath = xpath_syns){
-  if(url %in% target_urls) get_spp_url(url)
-  else remDr$navigate(url)
-  # Let the system update
-  Sys.sleep(.5)
-  
-  # Set a temporal object on which to call the url contents
-  tmp_syns_tbl <-
-    remDr$findElement("xpath", "/html/body/div[2]/main/section[2]/div/div[2]")
-  
-  # Obtain the synonyms
-  tmp <- 
-    tmp_syns_tbl$getCurrentUrl()[[1]] %>% 
-    read_html() %>% 
-    html_elements(xpath = xpath) %>% 
-    html_text2() %>% 
-    str_split("\n") %>% 
-    unlist() %>% 
-    .[!grepl("\\r", .)]
-  
-  # Get a version of the synonyms without all the author names,
-  # identified by capital letters or parentheses
-  tmp_clean <-
-    sapply(
-      tmp,
-      function(x){
-        places <- str_locate_all(x, "[A-Z]|(\\s\\()")[[1]]
-        if(NROW(places) > 1){
-         cut_at <- places[2,1]-1
-         str_sub(x, 1, cut_at) %>% str_trim()
-        }
-        else x})
-  
-  names(tmp_clean) <- NULL
-
-  # Let's store the results in a list
-  res <- list()
-  res$n <- length(tmp)
-  res$names <- tmp
-  res$clean <- tmp_clean
-  
-  return(res)
+  tryCatch(
+    {
+      if(url %in% target_urls) get_spp_url(url)
+      else remDr$navigate(url)
+      # Let the system update
+      Sys.sleep(threshold_time)
+      
+      # Set a temporal object on which to call the url contents
+      tmp_syns_tbl <-
+        remDr$findElement("xpath", "/html/body/div[2]/main/section[2]/div/div[2]")
+      
+      # Obtain the synonyms
+      tmp <- 
+        tmp_syns_tbl$getCurrentUrl()[[1]] %>% 
+        read_html() %>% 
+        html_elements(xpath = xpath) %>% 
+        html_text2() %>% 
+        str_split("\n") %>% 
+        unlist() %>% 
+        .[!grepl("\\r", .)]
+      
+      # Get a version of the synonyms without all the author names,
+      # identified by capital letters or parentheses
+      tmp_clean <-
+        sapply(
+          tmp,
+          function(x){
+            places <- str_locate_all(x, "[A-Z]|(\\s\\()")[[1]]
+            if(NROW(places) > 1){
+             cut_at <- places[2,1]-1
+             str_sub(x, 1, cut_at) %>% str_trim()
+            }
+            else x})
+      
+      names(tmp_clean) <- NULL
+    
+      # Let's store the results in a list
+      res       <- list()
+      res$n     <- length(tmp)
+      res$names <- tmp
+      res$clean <- tmp_clean
+      
+      return(res)
+    },
+    error = function(e) "Error. Probably the species is unplaced. Check by using get_spp_url()"
+  )
 }
 # It works, run the following command to try:
 # get_synonyms(tst_urls[[1]])
+
+# The anonymous function within the sapply will come about many times. Let's give it
+# a name:
+get_binomen <- function(x){
+  places <- str_locate_all(x, "[A-Z]|(\\s\\()")[[1]]
+  if(NROW(places) > 1){
+    cut_at <- places[2,1]-1
+    str_sub(x, 1, cut_at) %>% str_trim()
+  }
+  else x
+}
 
 get_ssp <- 
   function(
@@ -179,10 +239,9 @@ get_ssp <-
     
     tryCatch(
       {
-      Sys.sleep(1)
+      Sys.sleep(threshold_time)
       if(url %in% target_urls) get_spp_url(search_url = url)
       else stop("The species' URL can only be from the accepted names, not one of the synonyms")
-      Sys.sleep(1)
       
       # Many species don't have any subspecies, so it is convenient to search
       # by link text rather than by xpath, as the xpath will be overtaken
@@ -207,24 +266,16 @@ get_ssp <-
           unlist() %>% 
           .[!grepl("\\r", .)]
       
-      tmp_clean <-
-        sapply(
-          tmp,
-            function(x){
-              places <- str_locate_all(x, "[A-Z]|(\\s\\()")[[1]]
-              if(NROW(places) > 1){
-                cut_at <- places[2,1]-1
-                str_sub(x, 1, cut_at) %>% str_trim()
-              }
-             else x
-            })
+      tmp_clean <- sapply(tmp_syns, get_binomen)
       
       names(tmp_clean) <- NULL
       
-      res <- list()
-      res$n <- length(tmp)
+      res       <- list()
+      res$n     <- length(tmp)
       res$names <- tmp
       res$clean <- tmp_clean
+      
+      if(any(res$clean == "")) return(get_synonyms(url))
       
       return(res)
         },
@@ -233,7 +284,7 @@ get_ssp <-
   }
 
 # It works, run the following command to try:
-# get_ssp(target_urls[[1]]) # (Acer campestre, returns 3 ssps)
+get_ssp(target_urls[["Acer campestre"]]) # (Acer campestre, returns 3 ssps)
 # get_ssp(target_urls[[2]]) # (Allium scorodoprasum, 0 ssps, returns NULL)
 
 ## Now we now how to retrieve the synonyms and the subspecies of the species
@@ -244,214 +295,213 @@ get_ssp <-
 #  2) List of subspecies: Done -> get_ssp()
 #  3) For each subspecies, list of synonyms: pending
 
+## It would be easier to have a function that would return both, synonyms
+#  and, in case of there being any, subspecies, with a single call, to 
+#  speed up the process. Let's do it
+tst_get_all_names <- 
+  function(
+    url,
+    xpath1 = xpath_syns,
+    xpath2 = xpath_intra
+  ){
+    tryCatch(
+      {
+        if(url %in% target_urls) get_spp_url(search_url = url)
+        else stop("The species' URL can only be from the accepted names, not one of the synonyms")
+        
+        tmp <- remDr$getCurrentUrl()[[1]]
+        
+        tmp_syns <-
+          tmp %>% 
+          read_html() %>% 
+          html_elements(xpath = xpath1) %>% 
+          html_text2() %>% 
+          str_split("\n") %>% 
+          unlist() %>% 
+          .[!grepl("\\r", .)]
+        
+        tmp_syns_clean <- sapply(tmp_syns, get_binomen)
+
+        res_syns       <- list()
+        res_syns$n     <- length(tmp_syns)
+        res_syns$names <- tmp_syns
+        res_syns$clean <- unname(tmp_syns_clean)
+        
+        tmp_subsp <-
+          tmp %>% 
+          read_html() %>% 
+          html_elements(xpath = xpath2) %>% 
+          html_text2() %>% 
+          str_split("\n") %>% 
+          unlist() %>% 
+          .[!grepl("\\r", .)]
+        
+        tmp_subsp_clean <- sapply(tmp_syns, get_binomen)
+
+        if(any(tmp_subsp_clean == "")) return(res_syns)
+        
+        res_subsp       <- list()
+        res_subsp$n     <- length(tmp_subsp_clean)
+        res_subsp$names <- tmp_subsp
+        res_subsp$clean <- unname(tmp_subsp_clean)
+       
+        res       <- list()
+        res$n     <- sum(res_syns$n, res_subsp$n)
+        res$names <- c(res_syns$names, res_subsp$names)
+        res$clean <- c(res_syns$clean, res_subsp$clean)
+        
+        return(res)
+      },
+      error = function(e) "This is an error"
+    )
+  }
+
+# tst_get_all_names(taret_url[[1]])
+
 ## Let's go back to the start, and find how to obtain the URLs of the 
 #  different ssps. At least we know what species do contain subspecies,
 #  so we can make our search easier:
-y <- vector("list", length = length(target_urls))
-names(y) <- translations$spp_clean
-for(i in seq_along(target_urls)){
- y[[i]] <- get_ssp(target_urls[[i]]) 
+# y <- vector("list", length = length(target_urls))
+# for(i in seq_along(target_urls)){
+#  y[[i]] <- get_ssp(target_urls[[i]]) 
+# }
+# names(y) <- names(target_urls)
+# possible_false_negatives <- names(y)[sapply(y, is.null)]
+# y[possible_false_negatives] <- 
+#   lapply(
+#     possible_false_negatives, 
+#     function(x) y[[x]] <- get_ssp(target_urls[[x]])
+#     )
+
+## Now we can with some confidence say which species do contain subspecies: 
+# spp_with_ssps <- names(y[-c(which(sapply(y, is.null)))])
+
+## And it's a matter of finding the URLs of the subspecies of each species:
+get_subsp_url <- function(url){
+  tryCatch(
+    {
+      tmp <- remDr$getCurrentUrl()[[1]]
+      # The following lines can increase safety if we would use this function
+      # outside the others that provide the adequate context:
+      # if(tmp != url) remDr$navigate(url)
+      tmp <- remDr$findElement(using = "link text", value = "Accepted Infraspecifics")
+      tmp$clickElement()
+      
+      # In x we collect all the urls of the different subspecies
+      x <- 
+        tmp$getCurrentUrl()[[1]] %>% 
+        read_html() %>% 
+        html_nodes(xpath = "//*[@class='c-synonym-list two-col']//*[@class='teal-link']") %>% 
+        html_attr("href")
+      
+      # And now add the main directory
+      x <- paste0("https://powo.science.kew.org", x)
+      
+      return(x)
+    },
+    error = function(e) FALSE
+  )
 }
 
-spp_with_ssps <- names(y[-c(which(sapply(y, is.null)))])
-
-get_subsp_url <- function(url){
-  get_spp_url(url)
-  tmp <- remDr$findElement(using = "link text", value = "Accepted Infraspecifics")
-  tmp$clickElement()
-  x <- 
-    tmp$getCurrentUrl()[[1]] %>% 
-    read_html() %>% 
-    html_nodes(xpath = "//*[@class='teal-link']") %>% 
-    html_attr("href")
-  # If we explore a little bit, we find that the links that end with 1 are those
-  # belonging to (sub)species, while those ending with 2 or higher are for genera
-  # and families. 
-  x <- x[grepl("-1$", x)]
-  x <- paste0("https://powo.science.kew.org", x)
+## Now we make a function to get the synonyms of the list of subspecies URLs
+#  coming from a certain species:
+get_ssp_synonyms <- function(url_db){
+  my_ls  <-lapply(url_db, get_synonyms)
+  x <- list()
+  x$n <- length({
+    my_ls %>% 
+      lapply("[[", "names") %>% 
+      Reduce(c, .)
+  })
+  x$names <-
+    my_ls %>% 
+    lapply("[[", "names") %>% 
+    Reduce(c, .) %>% 
+    unlist() %>% 
+    unique() %>% 
+    .[grepl("\\s", .)]
+  x$clean <-
+    my_ls %>% 
+    lapply("[[", "clean") %>% 
+    Reduce(c, .) %>% 
+    unlist() %>% 
+    unique() %>% 
+    .[grepl("\\s", .)]
   return(x)
 }
 
-tst_fun <- function(url){
-  url_db <- get_subsp_url(url)
-  Sys.sleep(1)
-  my_ls  <-lapply(url_db, get_synonyms)
-  my_ls <-
-    my_ls %>% 
-      lapply("[[", "clean") %>% 
-      Reduce(c, .) %>% 
-      unlist() %>% 
-      unique() %>% 
-      .[grepl("\\s", .)]
-  return(my_ls)
-}
-
-tst <- tst_fun(target_urls[spp_with_ssps][[4]])
-
-subspecies_synonyms <- vector("list", length(spp_with_ssps))
-for(i in seq_along(subspecies_synonyms)){
-  subspecies_synonyms[[i]] <- 
-    get_synonyms("https://powo.science.kew.org/taxon/urn:lsid:ipni.org:names:884615-1")
-}
-
-# Find the element to click on:
-tmp <- remDr$findElement(using = "xpath", "/html/body/div[2]/div/div[3]/main/section/div[1]/div/article/a")
-tmp$clickElement()
-## Now we are in the website devoted to that species. Let's search for the
-#  information of each section:
-tmp_syns <- remDr$findElement(using = "link text", "Synonyms")
-
-# tmp_syns_tbl <- remDr$findElement("xpath", "/html/body/div[2]/main/section[2]/div/div[2]")
-# tmp_syns_tbl$clickElement()
-
-tmp_syns_tbl$getCurrentUrl()[[1]] %>% 
-  read_html() %>% 
-  html_elements(xpath = xpath_syns) %>% 
-  html_text2() %>% 
-  str_split("\n") %>% 
-  unlist() %>% 
-  .[!grepl("\\r", .)]
-
-
-tmp_ssp  <- remDr$findElement(using = "link text", "Accepted Infraspecifics")
-
-# We can already store all the names of the subspecies like this:
-tmp_ssp_vec <- 
-  tmp_ssp$getCurrentUrl()[[1]] %>% 
-  read_html() %>% 
-  html_elements(xpath = "/html/body/div[2]/main/section[3]/div/div[2]") %>% 
-  html_text2() %>% 
-  str_split("\n") %>% 
-  unlist() %>% 
-  .[!grepl("\\r", .)]
-
-## All the 
-
-ssp_url  <- tmp$getCurrentUrl()[[1]]
-ind <- 1
-tmp_ssp_url <- 
-  remDr$findElement(
-  using = "xpath", 
-  value = 
-    paste0("/html/body/div[2]/main/section[3]/div/div[2]/div/ul/li[", ind, "]/a")
-)
-tmp_ssp_url$clickElement()
-
-
-# You first have to go to the kew gardens website and reject the cookies. 
-remDr$navigate(target_urls[[1]])
-# After rejecting them don't to
-cookies_close <- ""
-pop_up_close  <- "/html/body/div[2]/div/div[1]/div/div/div[1]/div/button/svg"
-
-
-
-# Iterate the search along the target urls:
-for(i in seq_along(synonyms_list)){
-  tryCatch(
-    {
-      remDr$navigate(target_urls[[i]])
-      Sys.sleep(1) # Stop for half a second. Necessary, otherwise the system gets confused
-      tmp <- remDr$findElement(using = "xpath", "/html/body/div[2]/div/div[3]/main/section/div[1]/div/article/a")
-      
-      # class(A.campestre)
-      # tmp$getElementAttribute("href")
-      
-      tmp$clickElement()
-      tmp_syns <- remDr$findElement(using = "link text", "Synonyms")
-      tmp_ssp  <- remDr$findElement(using = "link text", "Accepted Infraspecifics")
-      
-      tmp_syns$clickElement()
-      
-      # tmp_syns_tbl <- remDr$findElement("xpath", "/html/body/div[2]/main/section[2]/div/div[2]")
-      # tmp_syns_tbl$clickElement()
-      
-      ssp_list[[i]] <-
-        tmp_ssp$getCurrentUrl()[[1]] %>% 
-        read_html() %>% 
-        html_elements(xpath = "/html/body/div[2]/main/section[3]/div/div[2]") %>% 
-        html_text2() %>% 
-        str_split("\n") %>% 
-        unlist()
-      
-      if(!is.null(ssp_list[[i]])){
-        sp_url  <- tmp$getCurrentUrl()[[1]]
-        ind <- 1
-        tmp_ssp <- 
-          remDr$findElement(
-            using = "xpath", 
-            value = 
-              paste0("/html/body/div[2]/main/section[3]/div/div[2]/div/ul/li[", ind, "]/a")
-          )
-        tmp_ssp$clickElement()
-        x <- list()
-        x[[ind]] <- 
-          tmp_ssp$getCurrentUrl()[[1]] |>
-          read_html(tmp_syns$getCurrentUrl()[[1]]) |> 
-          html_elements(xpath = "/html/body/div[2]/main/section[2]/div/div[2]") |>
-          html_text()
+## And now we tie everything together in a new function
+get_all_names <- 
+  function(
+    url,
+    xpath1 = xpath_syns,
+    xpath2 = xpath_intra
+  ){
+    tryCatch(
+      {
+        if(url %in% target_urls) get_spp_url(search_url = url)
+        else stop("The species' URL can only be from the accepted names, not one of the synonyms")
         
-        while(exists("tmp_ssp")){
-          tryCatch(
-            {
-              rm("tmp_ssp")
-              ind <- ind + 1
-              remDr$navigate(sp_url)
-              tmp_ssp <- 
-                remDr$findElement(
-                  using = "xpath", 
-                  value = 
-                    paste0("/html/body/div[2]/main/section[3]/div/div[2]/div/ul/li[", ind, "]/a")
-                )
-              tmp_ssp$clickElement()
-              x[[ind]] <- 
-                tmp_ssp$getCurrentUrl()[[1]] |>
-                read_html(tmp_syns$getCurrentUrl()[[1]]) |> 
-                html_elements(xpath = "/html/body/div[2]/main/section[2]/div/div[2]") |>
-                html_text()
-            },
-            error = function(e) NULL)
-        }
+        tmp <- remDr$getCurrentUrl()[[1]]
         
-        tmp_ssp$getElementText()
-        tmp_ssp$clickElement()
-        
-        tmp_ssp$getCurrentUrl()[[1]] %>% 
+        tmp_syns <-
+          tmp %>% 
           read_html() %>% 
-          html_elements(xpath = "/html/body/div[2]/main/section[3]/div/div[2]") %>% 
-          html_text2()
-      }
-      
-      synonyms_list[[i]] <-
-        read_html(tmp_syns$getCurrentUrl()[[1]]) |> 
-        html_elements(xpath = "/html/body/div[2]/main/section[2]/div/div[2]") |>
-        html_text()
-      
-      
-      
-      
-    },
-    error = function(e){
-      print(paste0("No synonyms for ", translations$spp_clean[[i]], ". Better check manually!"))
-      return(synonyms_list[[i]] <- "\nNo synonyms!\n")
-    }
-  )
-}
+          html_elements(xpath = xpath1) %>% 
+          html_text2() %>% 
+          str_split("\n") %>% 
+          unlist() %>% 
+          .[!grepl("\\r", .)]
+        
+        tmp_syns_clean <- sapply(tmp_syns, get_binomen)
+        
+        res_syns       <- list()
+        res_syns$n     <- length(tmp_syns)
+        res_syns$names <- tmp_syns
+        res_syns$clean <- unname(tmp_syns_clean)
+        
+        # With this conditional we can handle species that don't contain
+        # subspecies:
+        if(isFALSE(get_subsp_url(tmp))) return(res_syns)
+        
+        tmp_subsp <-
+          tmp %>% 
+          read_html() %>% 
+          html_elements(xpath = xpath2) %>% 
+          html_text2() %>% 
+          str_split("\n") %>% 
+          unlist() %>% 
+          .[!grepl("\\r", .)]
+        
+        tmp_subsp_clean <- sapply(tmp_syns, get_binomen)
 
-## The display will be much faster if you first clear your console history.
-#  In my system it's cleaned with ctrl+l
-#  You need the cat function to display nicely the contents retrieved by 
-#  html_text function
-cat(synonyms_list$`Veronica chamaedrys`)
-ssp_list$`Silene otites`
+        res_subsp       <- list()
+        res_subsp$n     <- length(tmp_subsp_clean)
+        res_subsp$names <- tmp_subsp
+        res_subsp$clean <- unname(tmp_subsp_clean)
+        
+        subs <- get_subsp_url(tmp)
+        res_subsyns <- get_ssp_synonyms(subs)
+        
+        # Combine everyhing in a single list:
+        res       <- list()
+        res$n     <- sum(res_syns$n, res_subsyns$n, res_subsp$n)
+        res$names <- c(res_syns$names, res_subsyns$names, res_subsp$names)
+        res$clean <- c(res_syns$clean, res_subsyns$clean, res_subsp$clean)
+        
+        return(res)
+      },
+      # And the only errors that might happen now are due to either
+      # d
+      error = function(e) "This is an error. Probably unplaced species, or need to increase threshold_time"
+    )
+  }
 
-good_synonym <- logical(length(na.omit(translations$spp_clean)))
-for(i in seq_along(synonyms_list)){
-  tryCatch(
-    good_synonym[i] <- grepl(translations[i,1], x = synonyms_list[[i]]),
-    error = function(e) good_synonym[i] <- F
-  )
-}
+# get_all_names(target_urls[[1]])
+get_all_names(target_urls[[2]])
+
+tmp <- lapply(target_urls, get_all_names)
+
 
 ## There are now duplicated species, delete them by:
 spp_db <- spp_db[unique(match(spp_db$spp_clean, spp_db$spp_clean)), ]

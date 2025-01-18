@@ -44,7 +44,7 @@ or some _Pinus_ species?). In the latter case we would probably have to get in t
 we will not deal with such instances here.
 
 2. Taxonomic changes: Having the same species that different authors call
-with different names, depending on the region and _Inula salicina_ $\equiv$ _Pentanema salicinum_
+with different names, depending on the region and _Inula salicina_ $\equiv$ _Pentanema salicinum_.
 
 3. Systematic changes: Displacements of a species within the phylogenetic tree,
 with the consequent change in names. For example, _Dorycnium austriacum_ can be
