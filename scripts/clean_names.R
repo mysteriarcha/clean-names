@@ -1,4 +1,7 @@
 library(tidyverse)
+
+#### 1. USING U.TAXONSTAND ---------------------------------------------------
+
 ## Load the function to clean the names
 source("./scripts/functions/get_clean_names.R")
 
@@ -56,7 +59,13 @@ spp_db <- arrange(spp_db, spp_clean)
 translations <- spp_db[!(spp_db$spp_raw %in% spp_db$spp_clean), ]
 NROW(translations) # 66 of them had to be translated to fit WCVP standards
 
+
+#### 2. WEBSCRAPING POWO -----------------------------------------------------
+
 ## Let's do some webscraping!
+
+## Load the libraries. RSelenium depends on rJava, and in Mac computers
+#  the installation can be quite involved.
 library(RSelenium)
 library(netstat)
 library(rvest)
@@ -67,12 +76,11 @@ rD <- rsDriver(browser="firefox",
                verbose=F,
                version = "latest",
                chromever = NULL)
-
+remDr <- rD$client
 # A browser window will pop-up automatically; close it manually. 
 # Now select the client from the server
-remDr <- rD$client
 remDr$close()
-# Open the ghost browser session
+# Open the ghost browser session on purpose
 remDr$open()
 
 # Make a list of your urls in the Kew gardens website. We need to add the
@@ -83,14 +91,11 @@ remDr$open()
 # whose synonym matches with Arenaria serpyllifolia. Of course this is not
 # what we want. The quote-unquote around the binomen solves this
 target_urls <- paste0('https://powo.science.kew.org/results?q=', 
-                      '"', na.omit(translations$spp_clean), '"'
-)
+                      '"', translations$spp_clean, '"')
+
+# Avoid duplicated searches:
 target_urls <- unique(target_urls)
 names(target_urls) <- unique(translations$spp_clean)
-
-# Set a list with names we will fill in
-synonyms_list        <- vector("list", length = length(target_urls))
-names(synonyms_list) <- unique(translations$spp_clean)
 
 ## Each species can contain related names either in the Synonyms or the Accepted
 #  Intraspecifics sections of the POWO website. Each section has its own xpath:
@@ -156,12 +161,16 @@ get_spp_url(target_urls[[1]])
 #  located anywhere. This forces us to examine their synonyms and subspecies
 #  manually, not through our webscraping functions. We can detect them with
 #  the following code:
-x <- lapply(target_urls, get_spp_url)
-unplaced_spp <- names(x)[sapply(x, isFALSE)]
+# x <- lapply(target_urls, get_spp_url)
+# unplaced_spp <- names(x)[sapply(x, isFALSE)]
 # unplaced_spp
 ## Clinopodium arvense, Knautia rimosa and Trisetum elatum are unplaced species.
 #  Let's get rid of them:
-target_urls <- target_urls[!sapply(x, isFALSE)]
+# target_urls <- target_urls[!sapply(x, isFALSE)]
+
+## We DON'T run this now because our last function will be able to handle this
+#  cases, and it will still be easy to detect what are the unnamed species.
+
 
 ## Now let's find which are the synonyms. Making a function will be useful
 #  as we have to know both the synonyms at the species and at the subspecies
@@ -355,28 +364,13 @@ tst_get_all_names <-
       error = function(e) "This is an error"
     )
   }
-
-# tst_get_all_names(taret_url[[1]])
+#  This function will be the basis of a real get_all_names function,
+#  but first we need to define some other things.
 
 ## Let's go back to the start, and find how to obtain the URLs of the 
-#  different ssps. At least we know what species do contain subspecies,
-#  so we can make our search easier:
-# y <- vector("list", length = length(target_urls))
-# for(i in seq_along(target_urls)){
-#  y[[i]] <- get_ssp(target_urls[[i]]) 
-# }
-# names(y) <- names(target_urls)
-# possible_false_negatives <- names(y)[sapply(y, is.null)]
-# y[possible_false_negatives] <- 
-#   lapply(
-#     possible_false_negatives, 
-#     function(x) y[[x]] <- get_ssp(target_urls[[x]])
-#     )
-
-## Now we can with some confidence say which species do contain subspecies: 
-# spp_with_ssps <- names(y[-c(which(sapply(y, is.null)))])
-
-## And it's a matter of finding the URLs of the subspecies of each species:
+#  different ssps. It would be desirable that our search can automatically
+#  detect what species contain an "Accepted Infraspecifics" section.
+#  We can do this with the following function:
 get_subsp_url <- function(url){
   tryCatch(
     {
@@ -386,6 +380,8 @@ get_subsp_url <- function(url){
       # if(tmp != url) remDr$navigate(url)
       tmp <- remDr$findElement(using = "link text", value = "Accepted Infraspecifics")
       tmp$clickElement()
+      # If the previous lines fail the tryCatch will return a FALSE,
+      # giving us a conditional that can be handled by a parent function
       
       # In x we collect all the urls of the different subspecies
       x <- 
@@ -491,17 +487,20 @@ get_all_names <-
         
         return(res)
       },
+      
       # And the only errors that might happen now are due to either
-      # d
+      # unplaced species or lack of time for the system to update while scraping
       error = function(e) "This is an error. Probably unplaced species, or need to increase threshold_time"
     )
   }
 
-# get_all_names(target_urls[[1]])
-get_all_names(target_urls[[2]])
+synonyms_list <- lapply(target_urls, get_all_names)
+names(synonyms_list) <- names(target_urls)
+saveRDS(synonyms_list, "synonyms_list.RDS")
 
-tmp <- lapply(target_urls, get_all_names)
-
+##################################################################################
+### END OF WEBSCRAPING SECTION ###
+##################################################################################
 
 ## There are now duplicated species, delete them by:
 spp_db <- spp_db[unique(match(spp_db$spp_clean, spp_db$spp_clean)), ]
