@@ -519,11 +519,12 @@ synonyms_list <- readRDS("synonyms_list.RDS")
 
 ## There are some species (either unplaced or that have neither synonyms
 #  nor infraspecifics) whose entry in synonyms_list will be of length 0. 
-## This will forcefully have to be dealt with manually, as the webscraping
+## These will forcefully have to be dealt with manually, as the webscraping
 #  did not provide any information about them
 unplaced_spp <- names(synonyms_list)[which((lapply(synonyms_list, "[[", "n")) == 0)]
 
-## Now, with this function we can 
+## Now, with this function we can make a validation comparing the raw names
+#  with the synonyms list we obtained by webscraping:
 validate_name <- function(raw, # raw species name
                           trans_db = translations,  # database of translations
                           syns_db  = synonyms_list, # webscraping results
