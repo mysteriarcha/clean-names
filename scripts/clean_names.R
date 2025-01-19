@@ -60,7 +60,9 @@ translations <- spp_db[!(spp_db$spp_raw %in% spp_db$spp_clean), ]
 NROW(translations) # 66 of them had to be translated to fit WCVP standards
 
 
+###############################################################################
 #### 2. WEBSCRAPING POWO -----------------------------------------------------
+###############################################################################
 
 ## Let's do some webscraping!
 
@@ -426,7 +428,8 @@ get_ssp_synonyms <- function(url_db){
   return(x)
 }
 
-## And now we tie everything together in a new function
+## And now we have seen all the steps, we can  tie everything together 
+#  in a new function
 get_all_names <- 
   function(
     url,
@@ -493,73 +496,136 @@ get_all_names <-
       error = function(e) "This is an error. Probably unplaced species, or need to increase threshold_time"
     )
   }
+rm("tst_get_all_names")
 
-synonyms_list <- lapply(target_urls, get_all_names)
-names(synonyms_list) <- names(target_urls)
-saveRDS(synonyms_list, "synonyms_list.RDS")
+# get_all_names(target_urls[[1]])
+
+# synonyms_list <- lapply(target_urls, get_all_names)
+# invisible(setNames(synonyms_list, names(target_urls)))
+# saveRDS(synonyms_list, "synonyms_list.RDS")
 
 ##################################################################################
 ### END OF WEBSCRAPING SECTION ###
 ##################################################################################
 
-## There are now duplicated species, delete them by:
-spp_db <- spp_db[unique(match(spp_db$spp_clean, spp_db$spp_clean)), ]
+
+# 3. NAME VALIDATION ------------------------------------------------------
+
+## Once we have the synonyms_list object, we can just go species by species
+#  checking whether the raw species names are included in it, which woul validate
+#  the translation made by U.Taxonstand
+
+synonyms_list <- readRDS("synonyms_list.RDS")
+
+## There are some species (either unplaced or that have neither synonyms
+#  nor infraspecifics) whose entry in synonyms_list will be of length 0. 
+## This will forcefully have to be dealt with manually, as the webscraping
+#  did not provide any information about them
+unplaced_spp <- names(synonyms_list)[which((lapply(synonyms_list, "[[", "n")) == 0)]
+
+## Now, with this function we can 
+validate_name <- function(raw, # raw species name
+                          trans_db = translations,  # database of translations
+                          syns_db  = synonyms_list, # webscraping results
+                          horizon  = 3 # free parameter to search for up to [horizon]
+                                       # closest strings between raw and syns_db entries
+                          ){
+  ind   <- which(spp_db$spp_raw == raw)
+  clean <- spp_db$spp_clean[ind]
+  
+  syns  <- c(clean, syns_db[[clean]]$clean)
+  # return(syns)
+  
+  x <- raw %in% syns
+  if(x) return(x)
+  if(!x){
+    # Obtain Levenshtein's distance between raw and each synonym entry
+    strdists <- adist(raw, syns)
+    names(strdists) <- syns
+    strdists <- sort(strdists)
+    x <- paste0("The ", horizon, " most similar species are: ", 
+                paste(names(strdists[1:horizon]), collapse = ", "))
+    return(x)
+  }
+}
+## Let's vectorize the function so we can feed it directly our species list:
+validate_name <- Vectorize(validate_name, "raw")
+
+#  Now we can check which are the valid names
+validation <- validate_name(translations$spp_raw)
+accept <- names(validation)[which(validation == "TRUE")]
+
+#  And we can also filter out the non-valid species with its 3 (or more)
+#  closest names by the synonyms_list database:
+check_manually <- names(validation)[which(validation != "TRUE")]
+
+# validation[check_manually]
+
+## This verifies that in most cases we just had little typos that, when
+#  corrected, match perfectly some of the valid synonyms
 
 
+#################################################################################
 
-## Make a column for genera with:
-spp_db$genus <- stringr::str_split(spp_db$spp_clean, "\\s") %>% sapply("[[", 1)
+# 4. MISCELLANEA ----------------------------------------------------------
 
-## Now we can deal with the other 25 species manually. 
-#  Some of them will be implicitly already present in our spp_db object, 
-#  some of them not
-spp_names_out
 
-## THE FOLLOWING ACTIONS ARE JUST A SUGGESTION. You know better than me what 
-#  to do with and how to interpret all the "cf." and "agg.". My suggestion
-#  goes in the line of thinking that those strings are uninformative (i.e. the
-#  data is taxonomically trustworthy or that the study question does not require 
-#  the 'aggregatum' level of precision):
-
-## Let's gather first which spp in spp_names_out have species name. These are
-#  10 out of 25
-spp_out <- c("Carex montana", "Euphorbia dulcis", "Festuca rubra", "Festuca valesiaca",
-             "Knautia arvensis", "Medicago falcata", "Potentilla verna",
-             "Ranunculus auricomus", "Verbascum nigrum", "Vicia cracca")
-
-## Let's see which ones have been implicitly incorporated already into the
-#  clean species list
-redundant_spp <- sapply(spp_out, function(x) any(spp_db$spp_clean == x))
-
-names(redundant_spp)[redundant_spp] # Don't need to worry about these, they are already in spp_db
-diff_spp <- names(redundant_spp)[!redundant_spp] # These are not yet in spp_db
-## They can be easily added manually to spp_db
-
-## Now let's take a look at the genera that were left out: 
-genera_out <- stringr::str_split(spp_names_out, "\\s") %>% sapply("[", 1)
-length(unique(genera_out)) # 22 genera
-intersect(genera_out, spp_db$genus) # 19 of them are already present in spp_db
-setdiff(genera_out, spp_db$genus)   # These are the 3 not present in spp_db
-
-## Now you will have to decide how to deal with the 15 (25 - 10) remaining species,
-#  as they don't have species names. Most genera are already included in spp_bd,
-#  but 3 of them are not there yet (Betula, Rosa and Taraxacum), so you cannot 
-#  guess from the congeneric species in spp_db 
-
-## Make the necessary changes manually on the spp_db object until you're done,
-#  and then run, changing the file path and name to your convenience:
-#  write.csv(spp_db "./data/spp_names/spp_names_clean.csv")
-
-spp_combn  <- t(combn(spp_names_filtered, 2))
-congeneric_pairs <- 
-  t(
-    apply(spp_combn, 
-          1, 
-          function(x){
-            gen1 <- str_split(x[1], "\\s")[[1]] 
-            gen2 <- str_split(x[2], "\\s")[[1]] 
-            return(gen1 == gen2)
-          }
-    )
-  )[, 1]
-spp_combn[congeneric_pairs, ]
+# ## There are now duplicated species, delete them by:
+# spp_db <- spp_db[unique(match(spp_db$spp_clean, spp_db$spp_clean)), ]
+# 
+# ## Make a column for genera with:
+# spp_db$genus <- stringr::str_split(spp_db$spp_clean, "\\s") %>% sapply("[[", 1)
+# 
+# ## Now we can deal with the other 25 species manually. 
+# #  Some of them will be implicitly already present in our spp_db object, 
+# #  some of them not
+# spp_names_out
+# 
+# ## THE FOLLOWING ACTIONS ARE JUST A SUGGESTION. You know better than me what 
+# #  to do with and how to interpret all the "cf." and "agg.". My suggestion
+# #  goes in the line of thinking that those strings are uninformative (i.e. the
+# #  data is taxonomically trustworthy or that the study question does not require 
+# #  the 'aggregatum' level of precision):
+# 
+# ## Let's gather first which spp in spp_names_out have species name. These are
+# #  10 out of 25
+# spp_out <- c("Carex montana", "Euphorbia dulcis", "Festuca rubra", "Festuca valesiaca",
+#              "Knautia arvensis", "Medicago falcata", "Potentilla verna",
+#              "Ranunculus auricomus", "Verbascum nigrum", "Vicia cracca")
+# 
+# ## Let's see which ones have been implicitly incorporated already into the
+# #  clean species list
+# redundant_spp <- sapply(spp_out, function(x) any(spp_db$spp_clean == x))
+# 
+# names(redundant_spp)[redundant_spp] # Don't need to worry about these, they are already in spp_db
+# diff_spp <- names(redundant_spp)[!redundant_spp] # These are not yet in spp_db
+# ## They can be easily added manually to spp_db
+# 
+# ## Now let's take a look at the genera that were left out: 
+# genera_out <- stringr::str_split(spp_names_out, "\\s") %>% sapply("[", 1)
+# length(unique(genera_out)) # 22 genera
+# intersect(genera_out, spp_db$genus) # 19 of them are already present in spp_db
+# setdiff(genera_out, spp_db$genus)   # These are the 3 not present in spp_db
+# 
+# ## Now you will have to decide how to deal with the 15 (25 - 10) remaining species,
+# #  as they don't have species names. Most genera are already included in spp_bd,
+# #  but 3 of them are not there yet (Betula, Rosa and Taraxacum), so you cannot 
+# #  guess from the congeneric species in spp_db 
+# 
+# ## Make the necessary changes manually on the spp_db object until you're done,
+# #  and then run, changing the file path and name to your convenience:
+# #  write.csv(spp_db "./data/spp_names/spp_names_clean.csv")
+# 
+# spp_combn  <- t(combn(spp_names_filtered, 2))
+# congeneric_pairs <- 
+#   t(
+#     apply(spp_combn, 
+#           1, 
+#           function(x){
+#             gen1 <- str_split(x[1], "\\s")[[1]] 
+#             gen2 <- str_split(x[2], "\\s")[[1]] 
+#             return(gen1 == gen2)
+#           }
+#     )
+#   )[, 1]
+# spp_combn[congeneric_pairs, ]
